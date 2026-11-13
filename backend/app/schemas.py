@@ -19,13 +19,19 @@ class ActionResult(BaseModel):
     ok: bool
     message: str
     entry: dict[str, Any] | None = None
+    audit: dict[str, Any] | None = None
 
 
 class EntryPayload(BaseModel):
-    """登记或修改一条业务记录时提交的字段集合。"""
+    """登记或修改一条业务记录时提交的字段集合。
+
+    ``action`` 是旧调用把动作名直接放在顶层的兼容入口，与 ``values.action``
+    等价；新调用统一走 ``values``。
+    """
 
     values: dict[str, Any] = Field(default_factory=dict)
     remark: str | None = None
+    action: str | None = None
 
 
 

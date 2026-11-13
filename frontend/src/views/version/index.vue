@@ -31,15 +31,17 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>当前状态</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td><span class="status-badge" :data-status="String(row.status ?? '')">{{ row.status ?? '—' }}</span></td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in rowActions(row)"
               :key="action"
               class="link"
               type="button"
@@ -47,16 +49,46 @@
             >
               {{ action }}
             </button>
+            <span v-if="!rowActions(row).length" class="muted-text">生命周期已结束</span>
+            <button class="link" type="button" @click="openDetail(row)">详情</button>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无采集配置版本数据，可先登记配置版本</td>
+          <td :colspan="columns.length + 2" class="empty-state">暂无采集配置版本数据，可先登记配置版本</td>
         </tr>
       </tbody>
     </table>
 
+    <aside v-if="detail" class="detail-panel">
+      <header class="detail-head">
+        <strong>{{ detail.版本编号 }} · {{ detail.配置名称 }}</strong>
+        <span class="status-badge" :data-status="String(detail.status ?? '')">{{ detail.status }}</span>
+        <button class="link" type="button" @click="closeDetail">收起</button>
+      </header>
+      <p class="muted-text">
+        当前状态「{{ detail.status }}」，可执行动作：{{ detailActions(detail).join('、') || '无' }}
+      </p>
+      <h3>审计留痕</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th v-for="column in auditColumns" :key="column">{{ column }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="event in detailTrail(detail)" :key="String(event.id)">
+            <td v-for="column in auditColumns" :key="column">{{ event[column] ?? '—' }}</td>
+          </tr>
+          <tr v-if="!detailTrail(detail).length">
+            <td :colspan="auditColumns.length" class="empty-state">暂无审计留痕，版本状态迁移后会在此留下记录</td>
+          </tr>
+        </tbody>
+      </table>
+    </aside>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条采集配置版本记录</span>
+      <span v-if="successMessage" class="success-text">{{ successMessage }}</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -67,19 +99,37 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | boolean | null | undefined | string[] | Row[]>
 
 const ENDPOINT = '/api/version'
 const columns = ["版本编号", "配置名称", "版本号", "变更说明", "变更内容", "回滚标识", "发布状态", "发布时间"]
-const actions = ["发布版本", "回滚版本", "废弃版本"]
-const statuses = ["草稿", "已发布", "已回滚", "已废弃"]
+const auditColumns = ["记录编号", "操作类型", "执行人", "执行时间", "结果摘要", "复核状态"]
 const stats = [{"label": "配置版本总数", "value": 0}, {"label": "已发布版本", "value": 0}, {"label": "已回滚版本", "value": 0}]
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const successMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+const detail = ref<Row | null>(null)
+
+function rowActions(row: Row): string[] {
+  const value = row.available_actions
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
+function detailActions(row: Row): string[] {
+  return rowActions(row)
+}
+
+function detailTrail(row: Row): Row[] {
+  const value = row.audit_trail
+  return Array.isArray(value) ? (value as Row[]) : []
+}
 
 function resetFilters() {
   filters.value = {}
@@ -96,18 +146,41 @@ function openCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  successMessage.value = ''
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action, base_status: row.status ?? null } }),
     })
-    if (!response.ok) {
-      throw new Error('采集配置版本动作未生效，请稍后重试')
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message ?? payload.detail ?? '采集配置版本动作未生效，请稍后重试')
     }
+    successMessage.value = payload.message ?? '采集配置版本操作完成'
     await reload()
+    if (detail.value && detail.value.id === row.id) {
+      await openDetail(row)
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '采集配置版本操作失败'
   }
+}
+
+async function openDetail(row: Row) {
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/${row.id}`)
+    if (!response.ok) {
+      throw new Error('配置版本详情读取失败')
+    }
+    detail.value = await response.json()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '配置版本详情读取失败'
+  }
+}
+
+function closeDetail() {
+  detail.value = null
 }
 
 async function reload() {
@@ -128,3 +201,32 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.detail-panel {
+  margin-top: 12px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: #eef2f7;
+  color: var(--muted);
+}
+.status-badge[data-status='草稿'] { background: #eef2f7; }
+.status-badge[data-status='已发布'] { background: #e7f4e8; color: #1a7f37; }
+.status-badge[data-status='已回滚'] { background: #fff4e5; color: #b45309; }
+.status-badge[data-status='已废弃'] { background: #fdecec; color: #b42318; }
+.muted-text { color: var(--muted); font-size: 12px; }
+.success-text { color: #1a7f37; }
+</style>

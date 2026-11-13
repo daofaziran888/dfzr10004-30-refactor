@@ -23,6 +23,10 @@
         <span>{{ field }}</span>
         <input v-model="filters[field]" :placeholder="`按${field}检索`" />
       </label>
+      <label class="filter-item">
+        <span>版本编号</span>
+        <input v-model="versionNo" placeholder="按关联的版本编号过滤，如 VERS-0001" />
+      </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
     </form>
@@ -57,6 +61,7 @@
 
     <footer class="page-foot">
       <span>共 {{ total }} 条采集审计日志记录</span>
+      <span v-if="successMessage" class="success-text">{{ successMessage }}</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -78,11 +83,14 @@ const stats = [{"label": "审计记录总数", "value": 0}, {"label": "已复核
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const successMessage = ref('')
 const filters = ref<Record<string, string>>({})
+const versionNo = ref('')
 const filterFields = columns.slice(0, 3)
 
 function resetFilters() {
   filters.value = {}
+  versionNo.value = ''
   void reload()
 }
 
@@ -96,14 +104,17 @@ function openCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  successMessage.value = ''
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('采集审计日志动作未生效，请稍后重试')
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message ?? payload.detail ?? '采集审计日志动作未生效，请稍后重试')
     }
+    successMessage.value = payload.message ?? '采集审计日志操作完成'
     await reload()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '采集审计日志操作失败'
@@ -112,9 +123,12 @@ async function runAction(action: string, row: Row) {
 
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
+  const query = new URLSearchParams(filters.value as Record<string, string>)
+  if (versionNo.value.trim()) {
+    query.set('version_no', versionNo.value.trim())
+  }
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
+    const response = await request(`${ENDPOINT}?${query.toString()}`)
     if (!response.ok) {
       throw new Error('审计记录列表读取失败')
     }
@@ -128,3 +142,7 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.success-text { color: #1a7f37; }
+</style>

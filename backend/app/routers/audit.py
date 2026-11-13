@@ -1,4 +1,8 @@
-"""采集审计日志接口：维护审计记录，覆盖标记复核、归档记录等动作。"""
+"""采集审计日志接口：维护审计记录，覆盖标记复核、归档记录等动作。
+
+版本模块的每次状态迁移都会在这里留下一条审计记录；按版本编号过滤的清单
+与版本详情里的留痕来自同一个读口径，两边必然是同一份结果。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -6,28 +10,36 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.audit import AuditService
+from app.services.audit import LIFECYCLE, audit_service
 
 router = APIRouter(prefix="/api/audit", tags=["采集审计日志"])
 
-service = AuditService()
+service = audit_service
 
 LIST_FIELDS = ["记录编号", "操作类型", "采集计划", "执行人", "执行时间", "结果摘要", "变更内容", "复核状态"]
-STATUSES = ["已记录", "已复核", "已归档"]
+STATUSES = list(LIFECYCLE.states)
 
 
 @router.get("", response_model=PageResult[dict])
 def list_entries(
     keyword: str | None = Query(default=None, description="按记录编号检索"),
     status: str | None = Query(default=None, description="已记录、已复核、已归档"),
+    version_no: str | None = Query(default=None, description="按关联的版本编号过滤"),
     page: int = 1,
     size: int = 20,
 ) -> PageResult[dict]:
-    """按记录编号与状态过滤采集审计日志列表；没有数据时返回空页，不报错。"""
+    """按记录编号、状态或版本编号过滤采集审计日志列表；没有数据时返回空页，不报错。"""
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
-    items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
+    items, total = service.list_entries(keyword=keyword, status=status, version_no=version_no, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出采集审计日志清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "audit", "total": total, "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -51,15 +63,8 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     """对单条审计记录执行标记复核、归档记录；不允许的动作会被拦下并说明原因。"""
-    action = str(payload.values.get("action") or "").strip()
+    action = str(payload.values.get("action") or payload.action or "").strip()
     entry, message = service.run_action(entry_id, action)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出采集审计日志清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "audit", "total": total, "items": items}
